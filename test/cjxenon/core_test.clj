@@ -9,15 +9,21 @@
 ; Delete all data before each test
 (use-fixtures :each #(do (x/delete-all! c nil) (%)))
 
-(deftest cas-test!
+(deftest casv-test!
   (let [k (str (java.util.UUID/randomUUID))]
   (x/reset! c k "hi")
-  (is (false? (x/cas! c k 10 "next")))
+  (is (false? (x/casv! c k 10 "next")))
   (is (= "hi" (x/get c k)))
-
-  (x/cas! c k 0 "hello")
+  (x/casv! c k 0 "hello")
   (is (= "hello" (x/get c k)))))
 
+(deftest cas-test!
+  (let [k (str (java.util.UUID/randomUUID))]
+    (x/reset! c k "hi")
+    (is (false? (x/cas! c k "test" "next")))
+    (is (= "hi" (x/get c k)))
+    (x/cas! c k "hi" "hello")
+    (is (= "hello" (x/get c k)))))
 
 (deftest list-directory
   (is (= (x/get c nil)
@@ -31,9 +37,9 @@
 
 (deftest reset-get-test
   (testing "a simple key"
-    (x/create! c "foo" "value")
-    (x/reset! c "foo" "hi")
-    (is (= "hi" (x/get c "foo")))))
+    ;(x/create! c "foo11111111111" "value")
+    (x/reset! c "1foo" "hi")
+    (is (= "hi" (x/get c "1foo")))))
 
 (deftest create-test!
   (let [r (str (java.util.UUID/randomUUID))
@@ -42,6 +48,12 @@
     (is (= kk k))
     (is (= r (x/get c k)))))
 
-;(deftest getv-test
-;  (x/reset! c "foo" "hi")
-;  (is (= ["hi" 0] (x/getv c "foo"))))
+(deftest getv-test
+  (let [val "hello"
+        key (str (java.util.UUID/randomUUID))]
+    (x/create! c key val)
+  (is (= (list val 0) (x/getv c key)))
+  (x/reset! c key val)
+  (is (= (list val 1) (x/getv c key)))
+  (x/reset! c key val)
+  (is (= (list val 2) (x/getv c key)))))

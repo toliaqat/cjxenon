@@ -14,8 +14,12 @@
 
   Some functions come in pairs, like get and get*.
 
+<<<<<<< 1d5c94d83eb2cb0151bad31cdad4dce782b8a162:src/cjxenon/core.clj
   The get* variant returns the full etcd response body as a map, as specified
   by http://coreos.com/docs/distributed-configuration/etcd-api/. Note that
+=======
+  The get* variant returns the full xenon response body as a map. Note that
+>>>>>>> Make client code for Xenon:src/cjxenon/core.clj
   values are strings; cjxenon does not provide value
   serialization/deserialization yet.
 
@@ -314,7 +318,7 @@
     (getv client key {}))
   ([client key opts]
     (try+
-      (vals (select-keys (get* client key opts) (:name :documentVersion)))
+      (vals (select-keys (get* client key opts) [:name :documentVersion]))
       (catch [:status 404] _ nil))))
 
 (def h {"pragma" "xn-force-index-update"})
@@ -369,6 +373,7 @@
   ([client key opts]
    (->> opts
         (http-opts client)
+        ;(http/patch (url client (prefix-key factory key)) {:body "{ documentExpirationTimeMicros = 1 }" :headers h :content-type :json :debug debugging} )
         (http/delete (url client (prefix-key factory key))))))
 
 (defn delete-all!
@@ -383,18 +388,33 @@
                      )]
      (delete! client (name node)))))
 
+(defn casv!
+  "Compare and set based on the current value. Updates key to be value' iff the
+  current value of key is value. Optionally, you may also constrain the
+  previous index and/or the existence of the key. Returns false for CAS failure.
+"
+  ([client key value value']
+   (casv! client key value value' {}))
+  ([client key value value' opts]
+   (try+
+       (http/patch (url client (prefix-key factory key)) {:body (str "{ kind: 'com:vmware:xenon:services:common:ExampleService:StrictUpdateRequest', name: " value' ", documentVersion:" value "}") :headers h :content-type :json :debug debugging})
+     (catch [:status 400] _ false))))
+
 (defn cas!
   "Compare and set based on the current value. Updates key to be value' iff the
   current value of key is value. Optionally, you may also constrain the
   previous index and/or the existence of the key. Returns false for CAS failure.
 "
   ([client key value value']
-   (cas! client key value value' {}))
+    (cas! client key value value' '{}))
   ([client key value value' opts]
-   (try+
-       (http/patch (url client (prefix-key factory key)) {:body (str "{ kind: 'com:vmware:xenon:services:common:ExampleService:StrictUpdateRequest', name: " value' ", documentVersion:" value "}") :headers h :content-type :json :debug debugging})
-
-     (catch [:status 400] _ false))))
+    (try+
+      (
+        let [[val ver] (getv client key)]
+             (if (= val value)
+           (http/patch (url client (prefix-key factory key)) {:body (str "{ kind: 'com:vmware:xenon:services:common:ExampleService:StrictUpdateRequest', name: " value' ", documentVersion:" ver "}") :headers h :content-type :json :debug debugging})
+               false  ))
+      (catch [:status 400] _ false))))
 
 (defn cas-index!
   "Compare and set based on the current value. Updates key to be value' iff the
