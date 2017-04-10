@@ -1,4 +1,4 @@
-(ns verschlimmbesserung.core
+(ns cjxenon.core
   "Core Raft API operations over HTTP. Clients are currently stateless, but you
   may maintain connection pools going forward. In general, one creates a client
   using (connect) and uses that client as the first argument to all API
@@ -16,27 +16,32 @@
 
   The get* variant returns the full etcd response body as a map, as specified
   by http://coreos.com/docs/distributed-configuration/etcd-api/. Note that
-  values are strings; verschlimmbesserung does not provide value
+  values are strings; cjxenon does not provide value
   serialization/deserialization yet.
 
   The get variant returns a more streamlined representation: just the node
   value itself."
   (:refer-clojure :exclude [swap! reset! get set])
-  (:require [clojure.core           :as core]
+  (:require
+            [clojure.tools.logging :refer :all]
+            [clojure.core           :as core]
             [clojure.core.reducers  :as r]
             [clojure.string         :as str]
             [clojure.java.io        :as io]
             [clj-http.client        :as http]
             [clj-http.util          :as http.util]
             [cheshire.core          :as json]
+            [clojure.data.json      :as cjson]
             [slingshot.slingshot    :refer [try+ throw+]])
   (:import (com.fasterxml.jackson.core JsonParseException)
            (java.io InputStream)
            (clojure.lang MapEntry)))
 
-(def api-version "v2")
-
 (def default-timeout "milliseconds" 1000)
+
+(def debugging false)
+
+(def factory ["core" "examples"])
 
 (def default-swap-retry-delay
   "How long to wait (approximately) between retrying swap! operations which
@@ -44,7 +49,7 @@
   100)
 
 (defn connect
-  "Creates a new etcd client for the given server URI. Example:
+  "Creates a new xenon client for the given server URI. Example:
 
   (def etcd (connect \"http://127.0.0.1:4001\"))
 
@@ -65,7 +70,7 @@
 
   (base-url client) ; => \"http://127.0.0.1:4001/v2\""
   [client]
-  (str (:endpoint client) "/" api-version))
+  (str (:endpoint client)))
 
 (defn decompose-string
   "Splits a string on slashes, ignoring any leading slash."
@@ -102,8 +107,10 @@
 
 (defn prefix-key
   "For a given key, return a key sequence, prefixed with the given key element."
-  [prefix key]
-  (concat [prefix] (normalise-key key)))
+  ([key]
+  (concat (normalise-key key)))
+  ([prefix key]
+  (concat (normalise-key prefix) (normalise-key key))))
 
 (defn ^String encode-key-seq
   "Return a url-encoded key string for a key sequence."
@@ -129,7 +136,7 @@
 
   (key-url client \"foo\") ; => \"http://127.0.0.1:4001/v2/keys/foo"
   [client key]
-  (url client (prefix-key "keys" key)))
+  (url client (normalise-key key)))
 
 (defn remap-keys
   "Given a map, transforms its keys using the (f key). If (f key) is nil,
@@ -155,7 +162,6 @@
   [client opts]
   {:as                    :string
    :throw-exceptions?     true
-   :throw-entire-message? true
    :follow-redirects      true
    :force-redirects       true ; Etcd uses 307 for side effects like PUT
    :socket-timeout        (or (:timeout opts) (:timeout client))
@@ -202,6 +208,7 @@
      (catch (and (:body ~'%) (:status ~'%)) {:keys [:body :status] :as e#}
        ; etcd is quite helpful with its error messages, so we just use the body
        ; as JSON if possible.
+
        (try (let [body# (parse-json ~'body)]
               (throw+ (cond (string? body#) {:message body# :status ~'status}
                             (map? body#) (assoc body# :status ~'status)
@@ -248,8 +255,10 @@
                      :wait?        :wait
                      :wait-index   :waitIndex})
         (http-opts client)
-        (http/get (url client (prefix-key (:root-key opts "keys") key)))
-        parse)))
+        (http/get (url client (prefix-key factory key) ) {:debug debugging} )
+        (:body)
+        (parse-json)
+     )))
 
 (defn get
   "Gets the current value of a key. If the key does not exist, returns nil.
@@ -287,10 +296,28 @@
    (get client key {}))
   ([client key opts]
    (try+
-     (-> (get* client key opts)
-         :node
-         node->value)
+     (-> (get* client key opts)(:name))
      (catch [:status 404] _ nil))))
+
+(defn get-all-keys
+  ([client]
+    (get-all-keys client {}))
+  ([client opts]
+    (try+
+      (->> (get* client nil opts)
+        (:documentLinks)
+        (map (fn [x] (last (str/split x #"/")))))
+      (catch [:status 404] _ nil))))
+
+(defn getv
+  ([client key]
+    (getv client key {}))
+  ([client key opts]
+    (try+
+      (vals (select-keys (get* client key opts) (:name :documentVersion)))
+      (catch [:status 404] _ nil))))
+
+(def h {"pragma" "xn-force-index-update"})
 
 (defn reset!
   "Resets the current value of a given key to `value`. Options:
@@ -302,17 +329,19 @@
   ([client key value opts]
    (->> (assoc opts :value value)
         (http-opts client)
-        (http/put (url client (prefix-key (:root-key opts "keys") key)))
-        parse)))
+        (http/post (url client (prefix-key factory)) {:body (str "{ name: " value ", documentSelfLink: " (name key) "}") :headers h :content-type :json :debug debugging})
+     (:body)
+     (parse-json))))
 
 (defn create!*
   ([client path value]
    (create!* client path value {}))
   ([client path value opts]
    (->> (assoc opts :value value)
-        (http-opts client)
-        (http/put (url client (prefix-key (:root-key opts "keys") path)))
-        parse)))
+        (http/post (url client (prefix-key factory)) {:body (str "{ name: " value ", documentSelfLink: " (name path) "}") :headers h :content-type :json :debug debugging})
+     (:body)
+     (parse-json)
+     )))
 
 (defn create!
   "Creates a new, automatically named object under the given path with the
@@ -324,8 +353,10 @@
    (create! client path value {}))
   ([client path value opts]
    (-> (create!* client path value opts)
-       :node
-       :key)))
+       :documentSelfLink
+       (decompose-string)
+       (last)
+       )))
 
 (defn delete!
   "Deletes the given key. Options:
@@ -337,13 +368,8 @@
    (delete! client key {}))
   ([client key opts]
    (->> opts
-        (remap-keys {:recursive?  :recursive
-                     :dir?        :dir
-                     :prev-value  :prevValue
-                     :prev-index  :prevIndex})
         (http-opts client)
-        (http/delete (url client (prefix-key (:root-key opts "keys") key)))
-        parse)))
+        (http/delete (url client (prefix-key factory key))))))
 
 (defn delete-all!
   "Deletes all nodes, recursively if necessary, under the given directory.
@@ -353,37 +379,22 @@
   ([client key]
    (delete-all! client key {}))
   ([client key opts]
-   (doseq [node (->> (select-keys opts [:timeout])
-                     (get* client key)
-                     :node
-                     :nodes)]
-     (delete! client (:key node) {:recursive? (:dir node)
-                                  :timeout    (:timeout opts)}))))
+   (doseq [node (->> (get-all-keys client key)
+                     )]
+     (delete! client (name node)))))
 
 (defn cas!
   "Compare and set based on the current value. Updates key to be value' iff the
   current value of key is value. Optionally, you may also constrain the
   previous index and/or the existence of the key. Returns false for CAS failure.
-  Options:
-
-  :timeout
-  :ttl
-  :prev-value
-  :prev-index
-  :prev-exist?"
+"
   ([client key value value']
    (cas! client key value value' {}))
   ([client key value value' opts]
    (try+
-     (->> (assoc opts
-                 :prevValue  value
-                 :value      value')
-          (remap-keys {:prev-index  :prevIndex
-                       :prev-exist? :prevExist})
-          (http-opts client)
-          (http/put (url client (prefix-key (:root-key opts "keys") key)))
-          parse)
-     (catch [:errorCode 101] _ false))))
+       (http/patch (url client (prefix-key factory key)) {:body (str "{ kind: 'com:vmware:xenon:services:common:ExampleService:StrictUpdateRequest', name: " value' ", documentVersion:" value "}") :headers h :content-type :json :debug debugging})
+
+     (catch [:status 400] _ false))))
 
 (defn cas-index!
   "Compare and set based on the current value. Updates key to be value' iff the
@@ -406,7 +417,7 @@
           (remap-keys {:prev-value  :prevValue
                        :prev-exist? :prevExist})
           (http-opts client)
-          (http/put (url client (prefix-key (:root-key opts "keys") key)))
+          (http/put (url client (prefix-key key)))
           parse)
      (catch [:errorCode 101] _ false))))
 
