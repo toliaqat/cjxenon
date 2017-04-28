@@ -23,7 +23,14 @@
     (is (false? (x/cas! c k "test" "next")))
     (is (= "hi" (x/get c k)))
     (x/cas! c k "hi" "hello")
-    (is (= "hello" (x/get c k)))))
+    (is (= "hello" (x/get c k))))
+  (x/reset! c "foo" "init")
+  (is (false? (x/cas! c "foo" "nope" "next")))
+  (is (= "init" (x/get c "foo")))
+
+  (x/cas! c "foo" "init" "next")
+  (is (= "next" (x/get c "foo"))))
+
 
 (deftest list-directory
   (is (= (x/get c nil)

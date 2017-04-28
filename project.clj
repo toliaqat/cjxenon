@@ -1,6 +1,6 @@
-(defproject cjxenon "0.1.0"
-  :description "An xenon client."
-  :url "https://github.com/aphyr/cjxenon"
+(defproject cjxenon "0.1.1"
+  :description "A xenon client."
+  :url "https://github.com/toliaqat/cjxenon"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :main cjxenon.core-test
